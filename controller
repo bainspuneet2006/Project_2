@@ -39,7 +39,7 @@ char _c51_external_startup (void)
     XBR1 = 0x00;
     XBR2 = 0x40;
 
-    P2MDOUT &= ~(0x01); // P2.0 input/open-drain style
+    P2MDOUT &= ~(0x01); // P2.0 input
 
     return 0;
 }
@@ -94,7 +94,6 @@ bit read_one_byte(unsigned char *value, unsigned long bit_diff_min)
 
         if (on_time > 390000UL || off_time > 390000UL)
         {
-            printf("Timeout during byte read\r\n");
             return 0;
         }
 
@@ -108,7 +107,6 @@ bit read_one_byte(unsigned char *value, unsigned long bit_diff_min)
         }
         else
         {
-            printf("Bad bit timing ON=%lu OFF=%lu\r\n", on_time, off_time);
             return 0;
         }
     }
@@ -127,7 +125,7 @@ void main(void)
     unsigned long bit_diff_min = 800UL;
 
     printf("\r\n===========================\r\n");
-    printf(" IR Decoder Start/End V1   \r\n");
+    printf(" IR Decoder Start/End V2   \r\n");
     printf("===========================\r\n");
     printf("Waiting for remote...\r\n");
 
@@ -143,44 +141,35 @@ void main(void)
                 continue;
             }
 
-            // Uncomment for calibration
-            // printf("Leader ON=%lu OFF=%lu\r\n", on_time, off_time);
-
             if ((on_time > start_min) &&
                 (off_time > start_min) &&
                 approx_equal(on_time, off_time, start_tol))
             {
-                printf("\r\nStart detected\r\n");
-
                 if(!read_one_byte(&start_byte, bit_diff_min))
                 {
-                    printf("Failed reading start byte\r\n");
                     continue;
                 }
 
-                printf("Start byte = 0x%02X\r\n", (unsigned int)start_byte);
+                if(!read_one_byte(&cmd_byte, bit_diff_min))
+                {
+                    continue;
+                }
+
+                if(!read_one_byte(&end_byte, bit_diff_min))
+                {
+                    continue;
+                }
+
+                // ONLY print after the full packet is read
+                printf("\r\nStart byte   = 0x%02X\r\n", (unsigned int)start_byte);
+                printf("Command byte = 0x%02X\r\n", (unsigned int)cmd_byte);
+                printf("End byte     = 0x%02X\r\n", (unsigned int)end_byte);
 
                 if(start_byte != 0x22)
                 {
                     printf("Invalid start byte\r\n");
                     continue;
                 }
-
-                if(!read_one_byte(&cmd_byte, bit_diff_min))
-                {
-                    printf("Failed reading command byte\r\n");
-                    continue;
-                }
-
-                printf("Command byte = 0x%02X\r\n", (unsigned int)cmd_byte);
-
-                if(!read_one_byte(&end_byte, bit_diff_min))
-                {
-                    printf("Failed reading end byte\r\n");
-                    continue;
-                }
-
-                printf("End byte = 0x%02X\r\n", (unsigned int)end_byte);
 
                 if(end_byte != 0x44)
                 {
