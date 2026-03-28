@@ -1,0 +1,593 @@
+//  EFM8_Servo.c: Uses timer 5 interrupt to generate a servo motor control signal.
+//
+//  Copyright (c) 2010-2018 Jesus Calvino-Fraga
+//  ~C51~
+
+#include <EFM8LB1.h>
+#include <stdlib.h>
+
+#include <stdio.h>
+
+volatile unsigned int pwm_reload;
+volatile unsigned char pwm_state=0;
+volatile unsigned char count20ms;
+volatile unsigned char left_pwm_threshold = 0;
+volatile unsigned char right_pwm_threshold = 0;
+volatile int path_array1[] = {1, 3, 3, 1, 2,3,2,0};
+volatile int stopped = 0; 
+//NEED TO CHANGE THESE NUMBERS  
+volatile int path_array2[] = {5,4,5,4,2,2,0}; 
+volatile int path_array3[] = {4,2,4,5,4,5,2,0};
+#define Hbridge_1_1 P2_0
+#define Hbridge_1_2 P2_1
+#define Hbridge_2_1 P2_2
+#define Hbridge_2_2 P2_4
+#define move_forward_Button P1_0
+#define move_backward_Button P1_1
+#define move_right_Button P1_2
+#define move_left_Button P1_3
+#define move_180_Button P1_4
+#define base_speed 35
+#define slow_speed 15 
+
+// left is blue 
+// right is green
+//middle is yellow    
+#define left_inductor QFP32_MUX_P0_1
+#define right_inductor QFP32_MUX_P0_2
+#define middle_inductor QFP32_MUX_P2_5
+#define VDD 5
+
+
+//right 2
+//middle last one  
+
+//CHANGE ACCRODINGMLY
+#define intersection_value 3500
+
+
+
+#define SYSCLK 72000000L // SYSCLK frequency in Hz
+#define BAUDRATE 115200L
+#define RELOAD_10MS (0x10000L-(SYSCLK/(12L*100L)))
+#define SARCLK 18000000L
+
+char _c51_external_startup (void)
+{
+	// Disable Watchdog with key sequence
+	SFRPAGE = 0x00;
+	WDTCN = 0xDE; //First key
+	WDTCN = 0xAD; //Second key
+  
+	VDM0CN |= 0x80;
+	RSTSRC = 0x02;
+
+	#if (SYSCLK == 48000000L)	
+		SFRPAGE = 0x10;
+		PFE0CN  = 0x10; // SYSCLK < 50 MHz.
+		SFRPAGE = 0x00;
+	#elif (SYSCLK == 72000000L)
+		SFRPAGE = 0x10;
+		PFE0CN  = 0x20; // SYSCLK < 75 MHz.
+		SFRPAGE = 0x00;
+	#endif
+	
+	#if (SYSCLK == 12250000L)
+		CLKSEL = 0x10;
+		CLKSEL = 0x10;
+		while ((CLKSEL & 0x80) == 0);
+	#elif (SYSCLK == 24500000L)
+		CLKSEL = 0x00;
+		CLKSEL = 0x00;
+		while ((CLKSEL & 0x80) == 0);
+	#elif (SYSCLK == 48000000L)	
+		// Before setting clock to 48 MHz, must transition to 24.5 MHz first
+		CLKSEL = 0x00;
+		CLKSEL = 0x00;
+		while ((CLKSEL & 0x80) == 0);
+		CLKSEL = 0x07;
+		CLKSEL = 0x07;
+		while ((CLKSEL & 0x80) == 0);
+	#elif (SYSCLK == 72000000L)
+		// Before setting clock to 72 MHz, must transition to 24.5 MHz first
+		CLKSEL = 0x00;
+		CLKSEL = 0x00;
+		while ((CLKSEL & 0x80) == 0);
+		CLKSEL = 0x03;
+		CLKSEL = 0x03;
+		while ((CLKSEL & 0x80) == 0);
+	#else
+		#error SYSCLK must be either 12250000L, 24500000L, 48000000L, or 72000000L
+	#endif
+	
+	// Configure the pins used for square output
+	
+	
+	
+	//
+	//This is where we define what pins we want
+	//
+	
+	//this sets the the 1.0 pin as an input
+	// setting a pin at 0 makes it an input setting it 
+	P1MDOUT &= ~(0b_0000_0001);
+	
+	//
+	P2MDOUT |= 0b_0001_1111;
+	
+	P0MDOUT |= 0x10; // Enable UART0 TX as push-pull output
+	XBR0     = 0x01; // Enable UART0 on P0.4(TX) and P0.5(RX)                     
+	XBR1     = 0X10; // Enable T0 on P0.0
+	XBR2     = 0x40; // Enable crossbar and weak pull-ups
+
+	#if (((SYSCLK/BAUDRATE)/(2L*12L))>0xFFL)
+		#error Timer 0 reload value is incorrect because (SYSCLK/BAUDRATE)/(2L*12L) > 0xFF
+	#endif
+	// Configure Uart 0
+	SCON0 = 0x10;
+	CKCON0 |= 0b_0000_0000 ; // Timer 1 uses the system clock divided by 12.
+	TH1 = 0x100-((SYSCLK/BAUDRATE)/(2L*12L));
+	TL1 = TH1;      // Init Timer1
+	TMOD &= ~0xf0;  // TMOD: timer 1 in 8-bit auto-reload
+	TMOD |=  0x20;                       
+	TR1 = 1; // START Timer1
+	TI = 1;  // Indicate TX0 ready
+
+	// Initialize timer 5 for periodic interrupts
+	SFRPAGE=0x10;
+	TMR5CN0=0x00;
+	pwm_reload=0x10000L-(SYSCLK/(12L*50000L)); // 1.5 miliseconds pulse is the center of the servo
+	TMR5RL = pwm_reload;
+	TMR5=0xffff;   // Set to reload immediately
+	EIE2|=0b_0000_1000; // Enable Timer5 interrupts
+	TR5=1;         // Start Timer5 (TMR5CN0 is bit addressable)
+	
+	EA=1;
+	
+	SFRPAGE=0x00;
+	
+	return 0;
+}
+
+volatile unsigned char pwm_count;
+volatile unsigned char move_state;
+volatile unsigned char pwm_threshold;
+unsigned int cmd;
+void Timer5_ISR (void) interrupt INTERRUPT_TIMER5
+{
+	SFRPAGE=0x10;
+	TF5H = 0; // Clear Timer5 interrupt flag
+	// Since the maximum time we can achieve with this timer in the
+	// configuration above is about 10ms, implement a simple state
+	// machine to produce the required 20ms period.
+	//we first check if we are in a move state
+	// move state is 1 for forwards or 2 for backwards
+
+	if ( move_state > 0)
+	{
+	//we want to set a pwm pulse width so when out interupt happens we want to incrament a pwm vairbe
+	//first we check if the varible is abover 10 if it is we set it to zero
+	// we first incrament code  and then check 
+		pwm_count++;
+	
+		if( pwm_count > 50)
+			{
+				pwm_count = 0;
+			}	
+
+		//we check if we are moving backwards less than state 6 is backwards
+		if ( move_state < 6)
+		{
+			//we are moving forwards 
+
+		//we check the left motor movment first
+		if( left_pwm_threshold > pwm_count)
+		{
+			Hbridge_1_1 = 0;
+			Hbridge_1_2 = 1;
+		}
+		else
+		{
+			Hbridge_1_1 = 0;
+			Hbridge_1_2 = 0;
+		}
+
+		//we check right motor
+		if( right_pwm_threshold > pwm_count)
+		{
+			Hbridge_2_1 = 0;
+			Hbridge_2_2 = 1;
+		}
+		else{
+			Hbridge_2_1 = 0;
+			Hbridge_2_2 = 0;
+		}
+		
+		}
+
+		//we know its moving backwards
+		else{
+		if( left_pwm_threshold > pwm_count)
+		{
+			Hbridge_1_1 = 1;
+			Hbridge_1_2 = 0;
+		}
+		else
+		{
+			Hbridge_1_1 = 0;
+			Hbridge_1_2 = 0;
+		}
+
+		//we check right motor
+		if( right_pwm_threshold > pwm_count)
+		{
+			Hbridge_2_1 = 1;
+			Hbridge_2_2 = 0;
+		}
+		else{
+			Hbridge_2_1 = 0;
+			Hbridge_2_2 = 0;
+		}
+		}
+
+	}
+
+
+	//we need to move this all to some other funtio
+	
+	//we have our pwm counter going up now we want to check if we are in a move front state
+	//idle state here
+
+	
+	
+	
+}
+void waitms(unsigned int ms)
+{
+    unsigned int i, j;
+
+    for(i = 0; i < ms; i++)
+    {
+        for(j = 0; j < 1000; j++);
+    }
+}
+
+
+
+	void movement_fsm()
+	{
+		// we allready have the direction we want to move stored in the varible move_state
+		if (move_state == 1)
+		{//forwards
+			left_pwm_threshold = base_speed;
+			right_pwm_threshold = base_speed;
+		}
+		else if (move_state == 2)
+		{//right
+			left_pwm_threshold = base_speed;
+			right_pwm_threshold = 0;
+		}
+		else if ( move_state == 3)
+		{//left
+			left_pwm_threshold = 0;
+			right_pwm_threshold = base_speed;
+		}
+		else if( move_state == 4)
+		{//slight right
+			left_pwm_threshold = base_speed;
+			right_pwm_threshold = slow_speed;
+		}
+		else if( move_state == 5 )
+		{//slight left
+			left_pwm_threshold = slow_speed;
+			right_pwm_threshold = base_speed;
+		}
+		else if( move_state == 6)
+		{//backwards
+			left_pwm_threshold = base_speed;
+			right_pwm_threshold = base_speed;
+		}
+		else{
+			left_pwm_threshold = 0;
+			right_pwm_threshold = 0;
+		}
+
+}
+
+// this is controller mode code
+void controller_mode(unsigned char hex_data)
+{
+
+	//now we want to decode the cmd value
+	//forwards
+	//backwars
+	//left
+	//right
+	//stop
+	switch(hex_data) 
+	{
+	
+		case 0x01: move_state = 0; break;  //We stop
+		case 0x02: move_state = 1; break; // We move forwards
+		case 0x03: move_state = 6; break; //we move backwards
+		case 0x04: move_state = 3; break; //we move left
+		case 0x05: move_state = 2; break;  // we move right
+		case 0x06: move_state = 0; break; 	//NEED TO MAKE A ROTATING FUNCTION
+		default: move_state = 0;    break; //otherwise we stay at 0
+		
+	
+	
+	
+	}
+	movement_fsm(); 
+	
+	
+	
+	
+}
+
+void InitADC (void)
+{
+	SFRPAGE = 0x00;
+	ADEN=0; // Disable ADC
+	
+	ADC0CN1=
+		(0x2 << 6) | // 0x0: 10-bit, 0x1: 12-bit, 0x2: 14-bit
+        (0x0 << 3) | // 0x0: No shift. 0x1: Shift right 1 bit. 0x2: Shift right 2 bits. 0x3: Shift right 3 bits.		
+		(0x0 << 0) ; // Accumulate n conversions: 0x0: 1, 0x1:4, 0x2:8, 0x3:16, 0x4:32
+	
+	ADC0CF0=
+	    ((SYSCLK/SARCLK) << 3) | // SAR Clock Divider. Max is 18MHz. Fsarclk = (Fadcclk) / (ADSC + 1)
+		(0x0 << 2); // 0:SYSCLK ADCCLK = SYSCLK. 1:HFOSC0 ADCCLK = HFOSC0.
+	
+	ADC0CF1=
+		(0 << 7)   | // 0: Disable low power mode. 1: Enable low power mode.
+		(0x1E << 0); // Conversion Tracking Time. Tadtk = ADTK / (Fsarclk)
+	
+	ADC0CN0 =
+		(0x0 << 7) | // ADEN. 0: Disable ADC0. 1: Enable ADC0.
+		(0x0 << 6) | // IPOEN. 0: Keep ADC powered on when ADEN is 1. 1: Power down when ADC is idle.
+		(0x0 << 5) | // ADINT. Set by hardware upon completion of a data conversion. Must be cleared by firmware.
+		(0x0 << 4) | // ADBUSY. Writing 1 to this bit initiates an ADC conversion when ADCM = 000. This bit should not be polled to indicate when a conversion is complete. Instead, the ADINT bit should be used when polling for conversion completion.
+		(0x0 << 3) | // ADWINT. Set by hardware when the contents of ADC0H:ADC0L fall within the window specified by ADC0GTH:ADC0GTL and ADC0LTH:ADC0LTL. Can trigger an interrupt. Must be cleared by firmware.
+		(0x0 << 2) | // ADGN (Gain Control). 0x0: PGA gain=1. 0x1: PGA gain=0.75. 0x2: PGA gain=0.5. 0x3: PGA gain=0.25.
+		(0x0 << 0) ; // TEMPE. 0: Disable the Temperature Sensor. 1: Enable the Temperature Sensor.
+
+	ADC0CF2= 
+		(0x0 << 7) | // GNDSL. 0: reference is the GND pin. 1: reference is the AGND pin.
+		(0x1 << 5) | // REFSL. 0x0: VREF pin (external or on-chip). 0x1: VDD pin. 0x2: 1.8V. 0x3: internal voltage reference.
+		(0x1F << 0); // ADPWR. Power Up Delay Time. Tpwrtime = ((4 * (ADPWR + 1)) + 2) / (Fadcclk)
+	
+	ADC0CN2 =
+		(0x0 << 7) | // PACEN. 0x0: The ADC accumulator is over-written.  0x1: The ADC accumulator adds to results.
+		(0x0 << 0) ; // ADCM. 0x0: ADBUSY, 0x1: TIMER0, 0x2: TIMER2, 0x3: TIMER3, 0x4: CNVSTR, 0x5: CEX5, 0x6: TIMER4, 0x7: TIMER5, 0x8: CLU0, 0x9: CLU1, 0xA: CLU2, 0xB: CLU3
+
+	ADEN=1; // Enable ADC
+}
+
+void InitPinADC (unsigned char portno, unsigned char pin_num)
+{
+	unsigned char mask;
+	
+	mask=1<<pin_num;
+
+	SFRPAGE = 0x20;
+	switch (portno)
+	{
+		case 0:
+			P0MDIN &= (~mask); // Set pin as analog input
+			P0SKIP |= mask; // Skip Crossbar decoding for this pin
+		break;
+		case 1:
+			P1MDIN &= (~mask); // Set pin as analog input
+			P1SKIP |= mask; // Skip Crossbar decoding for this pin
+		break;
+		case 2:
+			P2MDIN &= (~mask); // Set pin as analog input
+			P2SKIP |= mask; // Skip Crossbar decoding for this pin
+		break;
+		default:
+		break;
+	}
+	SFRPAGE = 0x00;
+}
+
+// Function to read a specific pin
+unsigned int ADC_at_Pin(unsigned char pin)
+{
+	ADC0MX = pin;   // Select input from pin
+	ADINT = 0;
+	ADBUSY = 1;     // Convert voltage at the pin
+	while (!ADINT); // Wait for conversion to complete
+	return (ADC0);
+}
+
+float Volts_at_Pin(unsigned char pin)
+{
+	 return ((ADC_at_Pin(pin)*VDD)/16383.0);
+}
+
+
+
+
+int get_next_move(int path_flag, int intersection_count){
+	if(path_flag == 1){
+		return path_array1[intersection_count]; 
+	}
+	else if (path_flag == 2){
+		return path_array2[intersection_count]; 
+	}
+	else {
+		return path_array3[intersection_count]; 
+	}
+}
+unsigned int left_inductor_reading; 
+unsigned int right_inductor_reading; 
+unsigned int intersection_inductor;
+int at_intersection = 0;
+int intersection_count = 0; 
+
+void autonomous_mode(int path_flag){
+
+// intersection path
+//CHANGE THRESHOLD VALUE Accordingly
+  
+//start off at zero as we will start at an intersection
+//static int intersection_count;  
+int path_length; 
+int sensor_offset = 1000;
+
+
+ 
+
+
+
+int threshold = 50;
+//define threshold change if needed
+if(path_flag == 1) path_length = sizeof(path_array1) / sizeof(path_array1[0]); 
+else if(path_flag == 2) path_length = sizeof(path_array2) / sizeof(path_array2[0]); 
+else path_length  = sizeof(path_array3) / sizeof(path_array3[0]);
+
+
+
+left_inductor_reading = ADC_at_Pin(left_inductor); 
+printf("Left inductor reading: %4u ", left_inductor_reading);
+right_inductor_reading = ADC_at_Pin(right_inductor); 
+printf(" Right inductor reading: %4u \n", right_inductor_reading);
+
+
+
+
+if(intersection_count >= path_length){
+	move_state = 0; 
+	return; 
+}
+if(right_inductor_reading  > left_inductor_reading + threshold ){
+	//move left to account for it 
+	move_state = 5;
+}
+else if (left_inductor_reading > right_inductor_reading + threshold){
+	// go right to account for it 
+	move_state = 4; 
+}
+else{
+	//keep going straight 
+	move_state = 1; 
+
+}
+
+
+intersection_inductor = ADC_at_Pin(middle_inductor);
+//printf("We keep going fr: Move_state: %d\n", move_state); 
+//printf(" middle inductor %4u \n", intersection_inductor);
+//check intersection value to find value needed for it to be an intersection
+
+//found intersection
+// we need to find a way to not saturate the intersection count but also do the full turn
+// 
+// AFTER (fixed) — execute the turn, wait for it to complete, then go forward
+if(intersection_inductor >= intersection_value && !at_intersection){
+    if(!stopped){
+        move_state = 0;
+        movement_fsm();
+        waitms(300);           // Brief pause before the turn
+        stopped = 1;
+        return;
+    }
+    at_intersection = 1;
+    stopped = 0;
+
+    move_state = get_next_move(path_flag, intersection_count);
+    intersection_count++;
+
+    if(move_state == 0){       // End of path sentinel
+        movement_fsm();
+        return;
+    }
+
+    movement_fsm();            // Execute the turn
+    waitms(600);               // Hold the turn long enough to complete it
+
+    move_state = 1;            // NOW resume forward
+    movement_fsm();
+}
+else if (intersection_inductor < intersection_value){
+
+	at_intersection = 0;
+	
+	
+}
+
+
+
+
+movement_fsm();
+
+}
+
+// path_array
+/*
+0 - Stop
+1- Forward
+2- Backwards
+3 - Right
+4 - Left
+5 - slight right
+6 - slight left 
+*/
+
+
+
+void main (void)
+{
+
+	
+	//this just intializes our varibles
+	int path_flag; 
+	unsigned int last_hex_value;
+	pwm_count = 0;
+	pwm_threshold = 45;
+	//change with buttons perhaps 
+	path_flag = 1; 
+	//state 0 idle state
+	//state 1 forward_state
+	//state 2 backward_state 
+	//state 3 turn right then  -> idle state 
+	//state 4 turn left -> idle state 
+	//state 5 full 180 -> Idle state
+	last_hex_value = 0x00;
+
+	move_state = 0;
+	
+	InitADC();
+	
+	InitPinADC(0,1);
+	InitPinADC(0,2);
+	InitPinADC(2,5);
+
+	
+	
+	printf("started \n");
+	
+	while(1)
+		{
+		//so we will have a hex value to tell us what way we move
+			//last_hex_value = cmd;
+
+			//the first bit being 1 makes it so we are in manual mode
+		//	if(cmd & 0x8000)
+			//{
+			
+			//controller mode still needs to add slight right, slight left and rotating a full 180
+			//	controller_mode(last_hex_value);
+			//}
+			//else
+			//{
+				//have to find a way to configure the path_flag. Buttons perhaps 
+			autonomous_mode(path_flag);
+			//waitms(10); 
+			//}
+			
+		}
+}
+
