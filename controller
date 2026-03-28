@@ -75,6 +75,13 @@ void decode_and_print(unsigned char hex_data)
         case 0x04: printf("LEFT\r\n"); break;
         case 0x05: printf("RIGHT\r\n"); break;
         case 0x06: printf("ROTATE\r\n"); break;
+        case 0x07: printf("SLIGHT RIGHT \r\n"); break;
+        case 0x08: printf("SLIGHT LEFT \r\n"); break;
+        case 0x09: printf("SLIGHT BACK RIGHT \r\n"); break;
+        case 0x0A: printf("SLIGHT BACK LEFT \r\n"); break;
+        case 0x0B: printf("PATH 1 \r\n"); break;
+        case 0x0C: printf("PATH 2 \r\n"); break;
+        case 0x0D: printf("PATH 3 \r\n"); break;
         default:   printf("UNKNOWN\r\n"); break;
     }
 }
