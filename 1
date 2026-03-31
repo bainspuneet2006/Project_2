@@ -37,7 +37,7 @@ volatile xdata char path_array3[] = {4, 2, 4, 5, 4, 5, 2, 0};
 #define Hbridge_2_2 P1_4
 #define IR_PIN P3_0
 
-//CHANGE ACCORDING TO NECESSARY LAYOUT
+// CHANGE ACCORDING TO NECESSARY LAYOUT
 #define voltage_pin P1_5
 
 #define right_blinker P2_3
@@ -247,7 +247,6 @@ void Timer5_ISR (void) interrupt INTERRUPT_TIMER5
                 Hbridge_2_1 = 0;
                 Hbridge_2_2 = 0;
             }
-
         }
         else if (move_state < 6) // forward family
         {
@@ -322,7 +321,7 @@ void Timer4ms_Init(void)
     SFRPAGE = 0x10;
     TMR4CN0 = 0x00;              // stop Timer4, clear flags
     CKCON1 &= ~(0b_0000_0100);   // Timer4 uses SYSCLK/12 (bit 2 of CKCON1)
-    TMR4RL = 0xE890;             // 1ms overflow at 72MHz/12
+    TMR4RL = 0xE890;             // 1 ms overflow at 72MHz/12
     TMR4   = 0xE890;
     SFRPAGE = 0x00;
 }
@@ -836,6 +835,9 @@ void main (void)
 
     waitms(1000);
     path_flag = 1;
+
+    printf("\r\nEFM8 IR RECEIVER READY\r\n");
+    printf("PuTTY: 115200, 8N1\r\n");
 
     while (1)
     {
