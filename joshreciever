@@ -1,13 +1,10 @@
-LINK ERROR: unresolved external symbol '_main_got_valid_1_43' in module 'EFM8_Servo' of file 'EFM8_Servo.obj'
-
-
 #include <EFM8LB1.h>
 #include <stdio.h>
 
 #define SYSCLK     72000000L
 #define BAUDRATE   115200L
 
-#define IR_PIN P2_5
+#define IR_PIN P2_5   // TSOP output, active low
 
 char _c51_external_startup (void)
 {
@@ -37,7 +34,7 @@ char _c51_external_startup (void)
     TR1 = 1;
     TI = 1;
 
-    P0MDOUT |= 0x10;
+    P0MDOUT |= 0x10;   // UART TX on P0.4
     XBR0 = 0x01;
     XBR1 = 0x00;
     XBR2 = 0x40;
@@ -147,7 +144,6 @@ void main(void)
     unsigned long on_time, off_time;
     unsigned char cmd_byte;
     unsigned char last_cmd = 0x00;
-    bit got_valid = 0;
 
     unsigned long leader_min = 10000UL;
     unsigned long leader_tol = 4000UL;
@@ -173,9 +169,7 @@ void main(void)
                 (off_time > leader_min) &&
                 approx_equal(on_time, off_time, leader_tol))
             {
-                got_valid = read_frame(&cmd_byte);
-
-                if (got_valid)
+                if (read_frame(&cmd_byte))
                 {
                     if (cmd_byte != last_cmd)
                     {
