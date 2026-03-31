@@ -1,6 +1,5 @@
 #include <EFM8LB1.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #define SYSCLK 72000000L
 #define BAUDRATE 115200L
@@ -40,7 +39,7 @@ char _c51_external_startup (void)
     XBR1 = 0x00;
     XBR2 = 0x40;
 
-    P2MDOUT &= ~(0x01); // P2.0 input/open-drain style
+    P2MDOUT &= ~(0x01); // P2.0 input
 
     return 0;
 }
@@ -103,7 +102,7 @@ bit read_one_byte(unsigned char *value, unsigned long bit_diff_min)
         on_time = measure_duration(0);
         off_time = measure_duration(1);
 
-        printf("Bit %bu: ON=%lu OFF=%lu\r\n", i, on_time, off_time);
+        printf("Bit %u: ON=%lu OFF=%lu\r\n", (unsigned int)i, on_time, off_time);
 
         if (on_time > 390000UL || off_time > 390000UL)
         {
@@ -138,8 +137,6 @@ void main(void)
     unsigned long start_min = 3000UL;
     unsigned long start_tol = 6000UL;
     unsigned long bit_diff_min = 200UL;
-
-    setbuf(stdout, NULL);
 
     printf("\r\n===========================\r\n");
     printf(" IR Decoder Start/End V1   \r\n");
