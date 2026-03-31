@@ -1,3 +1,6 @@
+LINK ERROR: unresolved external symbol '_main_got_valid_1_43' in module 'EFM8_Servo' of file 'EFM8_Servo.obj'
+
+
 #include <EFM8LB1.h>
 #include <stdio.h>
 
