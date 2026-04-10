@@ -1,0 +1,287 @@
+#include "../Common/Include/stm32l051xx.h"
+#include "adc.h"
+#include <stdio.h>
+#include <math.h>
+#include <stdlib.h>
+
+#define F_CPU 32000000L
+#define IR_FREQ 38000L
+
+#define HIGH_THRESHOLD 3000
+#define LOW_THRESHOLD 1000
+
+typedef enum {
+STOP = 1,
+FORWARD,
+BACKWARD,
+LEFT,
+RIGHT,
+ROTATE,
+SLIGHT_RIGHT,
+SLIGHT_LEFT,
+SLIGHT_BACK_RIGHT,
+SLIGHT_BACK_LEFT,
+PATH1,
+PATH2,
+PATH3,
+PATH4,
+CLIMB
+} Command;
+
+// Global Variables
+int joy_x;
+int joy_y;
+int press;
+int sw1;
+int sw2;
+int sw3;
+int sw4;
+int button;
+
+Command cmd;
+Command last_cmd = 0; // force first send
+
+void wait_1ms(void)
+{
+SysTick->LOAD = (F_CPU / 1000L) - 1;
+SysTick->VAL = 0;
+SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
+while ((SysTick->CTRL & BIT16) == 0);
+SysTick->CTRL = 0x00;
+}
+
+void delayms(int len)
+{
+while (len--) wait_1ms();
+}
+
+void UART1_Init(void)
+{
+RCC->IOPENR |= BIT0;
+RCC->APB2ENR |= BIT14;
+
+// PA9 = USART1_TX, AF4
+GPIOA->MODER &= ~(BIT19 | BIT18);
+GPIOA->MODER |= BIT19;
+
+GPIOA->AFR[1] &= ~(0xF << 4);
+GPIOA->AFR[1] |= (4 << 4);
+
+USART1->BRR = 32000000 / 2400;
+
+USART1->CR1 |= BIT3; // TE
+USART1->CR1 |= BIT0; // UE
+}
+
+int _write(int file, char* ptr, int len)
+{
+(void)file; (void)ptr; (void)len;
+return len;
+}
+
+void UART1_SendByte(unsigned char b)
+{
+while (!(USART1->ISR & BIT7));
+USART1->TDR = b;
+}
+
+void GPIO_Init(void)
+{
+RCC->IOPENR |= BIT0; // GPIOA
+RCC->IOPENR |= BIT1; // GPIOB
+
+GPIOA->MODER = (GPIOA->MODER & ~(BIT4 | BIT5)) | (BIT4 | BIT5); // PA2 analog
+GPIOA->MODER = (GPIOA->MODER & ~(BIT6 | BIT7)) | (BIT6 | BIT7); // PA3 analog
+
+GPIOA->MODER = (GPIOA->MODER & ~(BIT8 | BIT9)); // PA4 input
+GPIOA->PUPDR = (GPIOA->PUPDR & ~(BIT8 | BIT9)) | BIT8; // PA4 pull-up
+
+GPIOA->MODER = (GPIOA->MODER & ~(BIT10 | BIT11)); // PA5 input
+GPIOA->PUPDR = (GPIOA->PUPDR & ~(BIT10 | BIT11)) | BIT10; // PA5 pull-up
+
+GPIOA->MODER = (GPIOA->MODER & ~(BIT12 | BIT13)); // PA6 input
+GPIOA->PUPDR = (GPIOA->PUPDR & ~(BIT12 | BIT13)) | BIT12; // PA6 pull-up
+
+GPIOA->MODER = (GPIOA->MODER & ~(BIT14 | BIT15)); // PA7 input
+GPIOA->PUPDR = (GPIOA->PUPDR & ~(BIT14 | BIT15)) | BIT14; // PA7 pull-up
+
+GPIOB->MODER = (GPIOB->MODER & ~(BIT0 | BIT1)); // PB0 input
+GPIOB->PUPDR = (GPIOB->PUPDR & ~(BIT0 | BIT1)) | BIT0; // PB0 pull-up
+
+// PB3 input
+GPIOB->MODER &= ~(BIT6 | BIT7);
+
+// PB3 pull-up
+GPIOB->PUPDR &= ~(BIT6 | BIT7);
+GPIOB->PUPDR |= BIT6;
+
+}
+
+void IR_PWM_Init(void)
+{
+RCC->IOPENR |= BIT0;   // GPIOA clock
+RCC->APB1ENR |= BIT0;  // TIM2 clock
+
+// PA15 = TIM2_CH1, AF5
+GPIOA->OTYPER &= ~BIT15;
+GPIOA->OSPEEDR = (GPIOA->OSPEEDR & ~(BIT30 | BIT31)) | (BIT30 | BIT31);
+GPIOA->MODER = (GPIOA->MODER & ~(BIT30 | BIT31)) | BIT31;
+GPIOA->AFR[1] = (GPIOA->AFR[1] & ~(0xF << 28)) | (5 << 28);
+
+TIM2->CR1 = 0;
+TIM2->PSC = 0;
+TIM2->ARR = (F_CPU / IR_FREQ) - 1;
+TIM2->CCR1 = (TIM2->ARR + 1) / 2; // 50% duty cycle
+
+TIM2->CCMR1 &= ~(0xFF);
+TIM2->CCMR1 |= (6 << 4); // PWM mode 1
+TIM2->CCMR1 |= BIT3;     // preload enable
+
+TIM2->CCER |= BIT0;      // channel ON all the time
+TIM2->CR1 |= BIT7;       // ARPE
+TIM2->EGR |= BIT0;       // update registers
+TIM2->CR1 |= BIT0;       // start timer
+}
+
+void read_joystick(void)
+{
+joy_x = readADC(ADC_CHSELR_CHSEL3);
+joy_y = readADC(ADC_CHSELR_CHSEL2);
+press = (GPIOA->IDR & BIT4) ? 0 : 1;
+}
+
+void read_path_control(void)
+{
+
+button = (GPIOB->IDR & BIT3) ? 0 : 1;
+int s1 = (GPIOA->IDR & BIT5) ? 0 : 1;
+int s2 = (GPIOA->IDR & BIT6) ? 0 : 1;
+int s3 = (GPIOA->IDR & BIT7) ? 0 : 1;
+int s4 = (GPIOB->IDR & BIT0) ? 0 : 1;
+
+
+//debounced
+delayms(5); // debounce delay
+
+int button_confirm = (GPIOB->IDR & BIT3) ? 0 : 1;
+int s1_confirm = (GPIOA->IDR & BIT5) ? 0 : 1;
+int s2_confirm = (GPIOA->IDR & BIT6) ? 0 : 1;
+int s3_confirm = (GPIOA->IDR & BIT7) ? 0 : 1;
+int s4_confirm = (GPIOB->IDR & BIT0) ? 0 : 1;
+
+button = (button && button_confirm);
+sw1 = (s1 && s1_confirm);
+sw2 = (s2 && s2_confirm);
+sw3 = (s3 && s3_confirm);
+sw4 = (s4 && s4_confirm);
+
+}
+
+void assign_command(void)
+{
+cmd = STOP;
+
+if (sw1) {
+cmd = PATH1;
+}
+else if (sw2) {
+cmd = PATH2;
+}
+else if (sw3) {
+cmd = PATH3;
+}
+else if (sw4) {
+cmd = PATH4;
+}
+else if (button) {
+cmd = CLIMB;
+}
+else {
+if (press) {
+cmd = ROTATE;
+}
+else if (joy_y >= HIGH_THRESHOLD && joy_x >= HIGH_THRESHOLD) {
+cmd = SLIGHT_RIGHT;
+}
+else if (joy_y >= HIGH_THRESHOLD && joy_x <= LOW_THRESHOLD) {
+cmd = SLIGHT_LEFT;
+}
+else if (joy_y <= LOW_THRESHOLD && joy_x >= HIGH_THRESHOLD) {
+cmd = SLIGHT_BACK_RIGHT;
+}
+else if (joy_y <= LOW_THRESHOLD && joy_x <= LOW_THRESHOLD) {
+cmd = SLIGHT_BACK_LEFT;
+}
+else if (joy_y >= HIGH_THRESHOLD) {
+cmd = FORWARD;
+}
+else if (joy_y <= LOW_THRESHOLD) {
+cmd = BACKWARD;
+}
+else if (joy_x <= LOW_THRESHOLD) {
+cmd = RIGHT;
+}
+else if (joy_x >= HIGH_THRESHOLD) {
+cmd = LEFT;
+}
+else {
+cmd = STOP;
+}
+}
+}
+
+unsigned char cmd_to_hex(Command cmd)
+{
+switch (cmd) {
+case STOP:               return 0x01;
+case FORWARD:            return 0x02;
+case BACKWARD:           return 0x03;
+case LEFT:               return 0x04;
+case RIGHT:              return 0x05;
+case ROTATE:             return 0x06;
+case SLIGHT_RIGHT:       return 0x07;
+case SLIGHT_LEFT:        return 0x08;
+case SLIGHT_BACK_RIGHT:  return 0x09;
+case SLIGHT_BACK_LEFT:   return 0x0A;
+case PATH1:              return 0x0B;
+case PATH2:              return 0x0C;
+case PATH3:              return 0x0D;
+case PATH4: 			 return 0x0E;
+case CLIMB: 			 return 0x1F;
+default:                 return 0x01;
+}
+}
+
+void send_uart_command(Command cmd)
+{
+unsigned char hexval = cmd_to_hex(cmd);
+UART1_SendByte(hexval);
+}
+
+void main(void)
+{
+GPIO_Init();
+initADC();
+UART1_Init();
+setbuf(stdout, NULL);
+IR_PWM_Init();
+
+while (1)
+{
+read_path_control();
+read_joystick();
+assign_command();
+
+// Only send when the command changes
+if (cmd != last_cmd)
+{
+//printf("X=%d Y=%d BTN=%d CMD=%d HEX=0x%02X\r\n",
+// joy_x, joy_y, press, cmd, cmd_to_hex(cmd));
+
+send_uart_command(cmd);
+last_cmd = cmd;
+}
+
+delayms(50);
+}
+}
