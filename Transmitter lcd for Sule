@@ -1,0 +1,98 @@
+//  LCD in 4-bit interface mode
+#include "../Common/Include/stm32l051xx.h"
+#include "lcd.h"
+
+// Uses SysTick to delay <us> micro-seconds. 
+
+void waitms (unsigned int ms)
+{
+	unsigned int j;
+	unsigned char k;
+	for(j=0; j<ms; j++)
+		for (k=0; k<4; k++) Delay_us(250);
+}
+
+
+
+void LCD_byte (unsigned char x)
+{
+	//Send high nible
+	if(x&0x80) LCD_D7_1; else LCD_D7_0;
+	if(x&0x40) LCD_D6_1; else LCD_D6_0;
+	if(x&0x20) LCD_D5_1; else LCD_D5_0;
+	if(x&0x10) LCD_D4_1; else LCD_D4_0;
+	LCD_pulse();
+	Delay_us(40);
+	//Send low nible
+	if(x&0x08) LCD_D7_1; else LCD_D7_0;
+	if(x&0x04) LCD_D6_1; else LCD_D6_0;
+	if(x&0x02) LCD_D5_1; else LCD_D5_0;
+	if(x&0x01) LCD_D4_1; else LCD_D4_0;
+	LCD_pulse();
+}
+
+void WriteData (unsigned char x)
+{
+	LCD_RS_1;
+	LCD_byte(x);
+	waitms(2);
+}
+
+void WriteCommand (unsigned char x)
+{
+	LCD_RS_0;
+	LCD_byte(x);
+	waitms(5);
+}
+
+void Delay_us(unsigned char us)
+{
+	SysTick->LOAD = ((F_CPU / 1000000L) * us) - 1;
+	SysTick->VAL = 0;
+	SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
+	while((SysTick->CTRL & BIT16) == 0);
+	SysTick->CTRL = 0x00;
+}
+
+void LCD_pulse(void)
+{
+	LCD_E_1;
+	Delay_us(5);
+	LCD_E_0;
+	Delay_us(50);
+}
+
+void LCD_4BIT(void)
+{
+	LCD_E_0;
+	LCD_RS_0;
+	waitms(50);
+
+	WriteCommand(0x33);
+	waitms(10);
+	WriteCommand(0x33);
+	waitms(10);
+	WriteCommand(0x32);
+	waitms(10);
+
+	WriteCommand(0x28);
+	waitms(5);
+	WriteCommand(0x0C);
+	waitms(5);
+	WriteCommand(0x06);
+	waitms(5);
+	WriteCommand(0x01);
+	waitms(20);
+}
+
+
+
+void LCDprint(char * string, unsigned char line, unsigned char clear)
+{
+	int j;
+
+	WriteCommand(line==2?0xc0:0x80);
+	waitms(5);
+	for(j=0; string[j]!=0; j++)	WriteData(string[j]);// Write the message
+	if(clear) for(; j<CHARS_PER_LINE; j++) WriteData(' '); // Clear the rest of the line
+}
